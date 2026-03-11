@@ -1,19 +1,32 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import os
+import json
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 
-load_dotenv()
-
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
+intents.message_content = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-user_cooldowns = {}
-location_timers = {}
-location_users = {}
+DATA_FILE = "data.json"
+panel_message = None
+
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {"cooldowns": {}, "locations": {}, "users": {}}
+
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
+
+
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f)
+
 
 locations = {
     1: "West Elizabeth | General Store",
@@ -32,72 +45,102 @@ locations = {
     14: "Lemoyne | Boat",
     15: "Lemoyne | General Store",
     16: "Lemoyne | Vanhorn Camp",
-    17: "Lemoyne | Fort Lemoyne",
+    17: "Lemoyne | Fort Lemoyne"
 }
 
 
 def format_time(end_time):
-    remaining = end_time - datetime.utcnow()
-    total_seconds = int(remaining.total_seconds())
 
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
+    remaining = datetime.fromisoformat(end_time) - datetime.utcnow()
+    seconds = int(remaining.total_seconds())
+
+    if seconds <= 0:
+        return "Available"
+
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
 
     return f"{hours}h {minutes}m"
 
 
 class RobberyButton(discord.ui.Button):
+
     def __init__(self, number):
-        super().__init__(label=str(number), style=discord.ButtonStyle.primary)
+        super().__init__(label=str(number))
         self.number = number
+        self.update_color()
+
+    def update_color(self):
+
+        data = load_data()
+
+        if str(self.number) in data["locations"]:
+            self.style = discord.ButtonStyle.danger
+        else:
+            self.style = discord.ButtonStyle.success
 
     async def callback(self, interaction: discord.Interaction):
 
         user = interaction.user
         now = datetime.utcnow()
 
-        # Remove timer if location already robbed
-        if self.number in location_timers:
+        data = load_data()
 
-            end_time = location_timers[self.number]
-            remaining = format_time(end_time)
+        cooldowns = data["cooldowns"]
+        locs = data["locations"]
+        users = data["users"]
 
-            del location_timers[self.number]
-            location_users.pop(self.number, None)
+        num = str(self.number)
+        uid = str(user.id)
+
+        # REMOVE TIMER
+        if num in locs:
+
+            del locs[num]
+            users.pop(num, None)
+
+            save_data(data)
 
             await interaction.response.send_message(
-                f"⛔ Timer removed for **{locations[self.number]}**\n"
-                f"Remaining time was **{remaining}**",
+                f"Timer removed for **{locations[self.number]}**",
                 ephemeral=True
             )
+
+            await update_panel()
             return
 
-        # Check user cooldown
-        if user.id in user_cooldowns:
+        # CHECK COOLDOWN
+        if uid in cooldowns:
 
-            if now < user_cooldowns[user.id]:
+            end = datetime.fromisoformat(cooldowns[uid])
 
-                remaining = format_time(user_cooldowns[user.id])
+            if now < end:
+
+                remaining = format_time(cooldowns[uid])
 
                 await interaction.response.send_message(
-                    f"⏳ You must wait **{remaining}** before another robbery.",
+                    f"Wait **{remaining}** before robbing again.",
                     ephemeral=True
                 )
                 return
 
-        # Start timers
-        location_timers[self.number] = now + timedelta(hours=24)
-        location_users[self.number] = user.display_name
+        # START ROBBERY
+        locs[num] = (now + timedelta(hours=24)).isoformat()
+        users[num] = user.display_name
 
-        user_cooldowns[user.id] = now + timedelta(hours=1)
+        cooldowns[uid] = (now + timedelta(hours=1)).isoformat()
+
+        save_data(data)
 
         await interaction.response.send_message(
-            f"💰 **{locations[self.number]} robbed by {user.display_name}!**\n"
-            f"Cooldown: **24h 0m**"
+            f"💰 **{locations[self.number]} robbed by {user.display_name}!**"
         )
+
+        await update_panel()
 
 
 class RobberyView(discord.ui.View):
+
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -105,35 +148,69 @@ class RobberyView(discord.ui.View):
             self.add_item(RobberyButton(num))
 
 
+def build_embed():
+
+    data = load_data()
+
+    embed = discord.Embed(
+        title="Robbery Locations",
+        description="🟢 Available | 🔴 Robbed",
+        color=0xff0000
+    )
+
+    for num, name in locations.items():
+
+        if str(num) in data["locations"]:
+
+            remaining = format_time(data["locations"][str(num)])
+            robber = data["users"].get(str(num), "Unknown")
+
+            value = f"🔴 {remaining}\n👤 {robber}"
+
+        else:
+            value = "🟢 Available"
+
+        embed.add_field(name=f"{num} | {name}", value=value, inline=False)
+
+    return embed
+
+
+async def update_panel():
+
+    global panel_message
+
+    if panel_message is None:
+        return
+
+    embed = build_embed()
+    view = RobberyView()
+
+    await panel_message.edit(embed=embed, view=view)
+
+
+@tasks.loop(minutes=1)
+async def refresh_panel():
+
+    await update_panel()
+
+
 @bot.event
 async def on_ready():
+
+    refresh_panel.start()
+
     print(f"Logged in as {bot.user}")
 
 
 @bot.command()
 async def robberies(ctx):
 
-    embed = discord.Embed(
-        title="Robbery Locations",
-        description="Click a number to rob.\nClick again to remove timer.",
-        color=0xff0000
-    )
+    global panel_message
 
-    for num, name in locations.items():
+    embed = build_embed()
+    view = RobberyView()
 
-        if num in location_timers:
-
-            remaining = format_time(location_timers[num])
-            robber = location_users.get(num, "Unknown")
-
-            value = f"⏳ {remaining}\n👤 {robber}"
-
-        else:
-            value = "✅ Available"
-
-        embed.add_field(name=f"{num} | {name}", value=value, inline=False)
-
-    await ctx.send(embed=embed, view=RobberyView())
+    panel_message = await ctx.send(embed=embed, view=view)
 
 
 bot.run(TOKEN)
