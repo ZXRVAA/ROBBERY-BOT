@@ -15,6 +15,10 @@ DATA_FILE = "data.json"
 panel_message = None
 
 
+# ------------------------
+# DATA FUNCTIONS
+# ------------------------
+
 def load_data():
     if not os.path.exists(DATA_FILE):
         return {"cooldowns": {}, "locations": {}, "users": {}}
@@ -27,6 +31,10 @@ def save_data(data):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f)
 
+
+# ------------------------
+# ROBBERY LOCATIONS
+# ------------------------
 
 locations = {
     1: "West Elizabeth | General Store",
@@ -49,6 +57,10 @@ locations = {
 }
 
 
+# ------------------------
+# TIME FORMATTER
+# ------------------------
+
 def format_time(end_time):
 
     remaining = datetime.fromisoformat(end_time) - datetime.utcnow()
@@ -62,6 +74,10 @@ def format_time(end_time):
 
     return f"{hours}h {minutes}m"
 
+
+# ------------------------
+# BUTTON CLASS
+# ------------------------
 
 class RobberyButton(discord.ui.Button):
 
@@ -80,6 +96,8 @@ class RobberyButton(discord.ui.Button):
             self.style = discord.ButtonStyle.success
 
     async def callback(self, interaction: discord.Interaction):
+
+        await interaction.response.defer(ephemeral=True)
 
         user = interaction.user
         now = datetime.utcnow()
@@ -101,7 +119,7 @@ class RobberyButton(discord.ui.Button):
 
             save_data(data)
 
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Timer removed for **{locations[self.number]}**",
                 ephemeral=True
             )
@@ -109,7 +127,7 @@ class RobberyButton(discord.ui.Button):
             await update_panel()
             return
 
-        # CHECK COOLDOWN
+        # CHECK USER COOLDOWN
         if uid in cooldowns:
 
             end = datetime.fromisoformat(cooldowns[uid])
@@ -118,8 +136,8 @@ class RobberyButton(discord.ui.Button):
 
                 remaining = format_time(cooldowns[uid])
 
-                await interaction.response.send_message(
-                    f"Wait **{remaining}** before robbing again.",
+                await interaction.followup.send(
+                    f"⏳ Wait **{remaining}** before robbing again.",
                     ephemeral=True
                 )
                 return
@@ -132,12 +150,16 @@ class RobberyButton(discord.ui.Button):
 
         save_data(data)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"💰 **{locations[self.number]} robbed by {user.display_name}!**"
         )
 
         await update_panel()
 
+
+# ------------------------
+# VIEW
+# ------------------------
 
 class RobberyView(discord.ui.View):
 
@@ -147,6 +169,10 @@ class RobberyView(discord.ui.View):
         for num in locations:
             self.add_item(RobberyButton(num))
 
+
+# ------------------------
+# EMBED BUILDER
+# ------------------------
 
 def build_embed():
 
@@ -168,12 +194,21 @@ def build_embed():
             value = f"🔴 {remaining}\n👤 {robber}"
 
         else:
+
             value = "🟢 Available"
 
-        embed.add_field(name=f"{num} | {name}", value=value, inline=False)
+        embed.add_field(
+            name=f"{num} | {name}",
+            value=value,
+            inline=False
+        )
 
     return embed
 
+
+# ------------------------
+# PANEL UPDATE
+# ------------------------
 
 async def update_panel():
 
@@ -188,11 +223,19 @@ async def update_panel():
     await panel_message.edit(embed=embed, view=view)
 
 
+# ------------------------
+# AUTO REFRESH TIMER
+# ------------------------
+
 @tasks.loop(minutes=1)
 async def refresh_panel():
 
     await update_panel()
 
+
+# ------------------------
+# EVENTS
+# ------------------------
 
 @bot.event
 async def on_ready():
@@ -201,6 +244,10 @@ async def on_ready():
 
     print(f"Logged in as {bot.user}")
 
+
+# ------------------------
+# COMMAND
+# ------------------------
 
 @bot.command()
 async def robberies(ctx):
