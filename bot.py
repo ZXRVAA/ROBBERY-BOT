@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import os
 import json
 from datetime import datetime, timedelta
@@ -89,22 +89,13 @@ def clean_expired():
 
 
 # ------------------------
-# TIME FORMAT
+# DISCORD LIVE TIMER
 # ------------------------
 
-def format_time(end):
+def discord_timer(end):
 
-    remaining = datetime.fromisoformat(end) - datetime.utcnow()
-    seconds = int(remaining.total_seconds())
-
-    if seconds <= 0:
-        return "Available"
-
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-
-    return f"{hours}h {minutes}m {secs}s"
+    timestamp = int(datetime.fromisoformat(end).timestamp())
+    return f"<t:{timestamp}:R>"
 
 
 # ------------------------
@@ -119,7 +110,7 @@ def get_global_cd():
     if not data["global_cooldown"]:
         return "Available"
 
-    return format_time(data["global_cooldown"])
+    return discord_timer(data["global_cooldown"])
 
 
 # ------------------------
@@ -177,10 +168,8 @@ class RobberyButton(discord.ui.Button):
 
             if now < end:
 
-                remaining = format_time(data["global_cooldown"])
-
                 await interaction.followup.send(
-                    f"⏳ Global cooldown active\nWait **{remaining}**",
+                    f"⏳ Global cooldown active\nWait **{discord_timer(data['global_cooldown'])}**",
                     ephemeral=True
                 )
                 return
@@ -233,7 +222,7 @@ def build_embed():
 
         if str(num) in data["locations"]:
 
-            remaining = format_time(data["locations"][str(num)])
+            remaining = discord_timer(data["locations"][str(num)])
             robber = data["robbers"].get(str(num), "Unknown")
 
             value = f"🔴 {remaining}\n👤 {robber}"
@@ -264,34 +253,7 @@ async def update_panel():
     embed = build_embed()
     view = RobberyView()
 
-    try:
-        await panel_message.edit(embed=embed, view=view)
-    except:
-        pass
-
-
-# ------------------------
-# AUTO REFRESH
-# ------------------------
-
-@tasks.loop(minutes=1)
-async def refresh_panel():
-
-    if panel_message:
-        await update_panel()
-
-
-# ------------------------
-# EVENTS
-# ------------------------
-
-@bot.event
-async def on_ready():
-
-    if not refresh_panel.is_running():
-        refresh_panel.start()
-
-    print(f"Logged in as {bot.user}")
+    await panel_message.edit(embed=embed, view=view)
 
 
 # ------------------------
