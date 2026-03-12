@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import os
 import json
 from datetime import datetime, timedelta
@@ -73,12 +73,14 @@ def clean_expired():
     now = datetime.utcnow()
     changed = False
 
+    # location timers
     for loc, end in list(data["locations"].items()):
         if now >= datetime.fromisoformat(end):
             data["locations"].pop(loc)
             data["robbers"].pop(loc, None)
             changed = True
 
+    # global cooldown
     if data["global_cooldown"]:
         if now >= datetime.fromisoformat(data["global_cooldown"]):
             data["global_cooldown"] = None
@@ -104,7 +106,6 @@ def discord_timer(end):
 
 def get_global_cd():
 
-    clean_expired()
     data = load_data()
 
     if not data["global_cooldown"]:
@@ -175,7 +176,6 @@ class RobberyButton(discord.ui.Button):
                 return
 
         # START ROBBERY
-
         data["locations"][num] = (now + timedelta(hours=24)).isoformat()
         data["robbers"][num] = user.display_name
         data["global_cooldown"] = (now + timedelta(hours=1)).isoformat()
@@ -209,7 +209,6 @@ class RobberyView(discord.ui.View):
 
 def build_embed():
 
-    clean_expired()
     data = load_data()
 
     embed = discord.Embed(
@@ -257,6 +256,23 @@ async def update_panel():
 
 
 # ------------------------
+# AUTO CLEAN LOOP
+# ------------------------
+
+@tasks.loop(seconds=30)
+async def cooldown_watcher():
+
+    clean_expired()
+    await update_panel()
+
+
+@cooldown_watcher.before_loop
+async def before_loop():
+
+    await bot.wait_until_ready()
+
+
+# ------------------------
 # COMMAND
 # ------------------------
 
@@ -269,6 +285,17 @@ async def robberies(ctx):
     view = RobberyView()
 
     panel_message = await ctx.send(embed=embed, view=view)
+
+
+# ------------------------
+# STARTUP
+# ------------------------
+
+@bot.event
+async def on_ready():
+
+    cooldown_watcher.start()
+    print(f"Logged in as {bot.user}")
 
 
 bot.run(TOKEN)
