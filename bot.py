@@ -22,15 +22,18 @@ locations = {
     1: "West Elizabeth | General Store",
     2: "West Elizabeth | Bank",
     3: "West Elizabeth | Flatneck Station",
+
     4: "New Austin | Thieves Landing",
     5: "New Austin | Fort Mercer",
     6: "New Austin | Bank",
     7: "New Austin | Fort Don Julio",
     8: "New Austin | Vultures Crossing Station",
+
     9: "New Hanover | Fort Wallace",
     10: "New Hanover | Oil Fields",
     11: "New Hanover | Mount Hagen Mine",
     12: "New Hanover | Army Wagon",
+
     13: "Lemoyne | Bank",
     14: "Lemoyne | Boat",
     15: "Lemoyne | General Store",
@@ -45,7 +48,6 @@ locations = {
 def load_data():
 
     if not os.path.exists(DATA_FILE):
-
         return {
             "locations": {},
             "robbers": {},
@@ -59,7 +61,7 @@ def load_data():
 def save_data(data):
 
     with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
+        json.dump(data, f, indent=4)
 
 
 # ------------------------
@@ -123,30 +125,38 @@ class RobberyButton(discord.ui.Button):
         now = datetime.utcnow()
 
         data = load_data()
-
         locs = data["locations"]
         robbers = data["robbers"]
         global_cd = data["global_cooldown"]
 
         num = str(self.number)
 
-        # REMOVE TIMER
+        # ------------------------
+        # REMOVE TIMER + COOLDOWNS
+        # ------------------------
+
         if num in locs:
 
             del locs[num]
             robbers.pop(num, None)
 
+            # remove global cooldown
+            data["global_cooldown"] = None
+
             save_data(data)
 
             await interaction.followup.send(
-                f"Timer removed for **{locations[self.number]}**",
+                f"Cooldowns removed for **{locations[self.number]}**",
                 ephemeral=True
             )
 
             await update_panel()
             return
 
+        # ------------------------
         # CHECK GLOBAL COOLDOWN
+        # ------------------------
+
         if global_cd:
 
             if now < datetime.fromisoformat(global_cd):
@@ -159,11 +169,12 @@ class RobberyButton(discord.ui.Button):
                 )
                 return
 
+        # ------------------------
         # START ROBBERY
+        # ------------------------
 
         locs[num] = (now + timedelta(hours=24)).isoformat()
         robbers[num] = user.display_name
-
         data["global_cooldown"] = (now + timedelta(hours=1)).isoformat()
 
         save_data(data)
