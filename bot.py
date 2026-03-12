@@ -46,7 +46,6 @@ locations = {
 # ------------------------
 
 def load_data():
-
     if not os.path.exists(DATA_FILE):
         return {
             "locations": {},
@@ -59,7 +58,6 @@ def load_data():
 
 
 def save_data(data):
-
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
@@ -103,7 +101,6 @@ def get_global_cd():
 class RobberyButton(discord.ui.Button):
 
     def __init__(self, number):
-
         super().__init__(label=str(number))
         self.number = number
         self.update_color()
@@ -125,6 +122,7 @@ class RobberyButton(discord.ui.Button):
         now = datetime.utcnow()
 
         data = load_data()
+
         locs = data["locations"]
         robbers = data["robbers"]
         global_cd = data["global_cooldown"]
@@ -132,7 +130,7 @@ class RobberyButton(discord.ui.Button):
         num = str(self.number)
 
         # ------------------------
-        # REMOVE TIMER + COOLDOWNS
+        # REMOVE TIMER + GLOBAL COOLDOWN
         # ------------------------
 
         if num in locs:
@@ -140,13 +138,13 @@ class RobberyButton(discord.ui.Button):
             del locs[num]
             robbers.pop(num, None)
 
-            # remove global cooldown
+            # CLEAR GLOBAL COOLDOWN
             data["global_cooldown"] = None
 
             save_data(data)
 
             await interaction.followup.send(
-                f"Cooldowns removed for **{locations[self.number]}**",
+                f"Cooldown removed for **{locations[self.number]}** (Global cooldown cleared)",
                 ephemeral=True
             )
 
@@ -259,7 +257,6 @@ async def update_panel():
 
 @tasks.loop(minutes=1)
 async def refresh_panel():
-
     await update_panel()
 
 
