@@ -150,71 +150,71 @@ class RobberyButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
 
-    await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
 
-    user = interaction.user
-    now = datetime.utcnow()
+        user = interaction.user
+        now = datetime.utcnow()
 
-    data = load_data()
-    num = str(self.number)
+        data = load_data()
+        num = str(self.number)
 
-    # ------------------------
-    # REMOVE TIMER + GLOBAL CD
-    # ------------------------
+        # ------------------------
+        # REMOVE TIMER + GLOBAL CD
+        # ------------------------
 
-    if num in data["locations"]:
+        if num in data["locations"]:
 
-        data["locations"].pop(num, None)
-        data["robbers"].pop(num, None)
+            data["locations"].pop(num, None)
+            data["robbers"].pop(num, None)
 
-        # FORCE CLEAR GLOBAL COOLDOWN
-        data["global_cooldown"] = None
+            # clear global cooldown
+            data["global_cooldown"] = None
+
+            save_data(data)
+
+            await interaction.followup.send(
+                f"Timer removed for **{locations[self.number]}**.\nGlobal cooldown cleared.",
+                ephemeral=True
+            )
+
+            await update_panel()
+            return
+
+
+        # ------------------------
+        # CHECK GLOBAL COOLDOWN
+        # ------------------------
+
+        if data["global_cooldown"] is not None:
+
+            end = datetime.fromisoformat(data["global_cooldown"])
+
+            if now < end:
+
+                remaining = format_time(data["global_cooldown"])
+
+                await interaction.followup.send(
+                    f"⏳ Global cooldown active\nWait **{remaining}**",
+                    ephemeral=True
+                )
+                return
+
+
+        # ------------------------
+        # START ROBBERY
+        # ------------------------
+
+        data["locations"][num] = (now + timedelta(hours=24)).isoformat()
+        data["robbers"][num] = user.display_name
+        data["global_cooldown"] = (now + timedelta(hours=1)).isoformat()
 
         save_data(data)
 
         await interaction.followup.send(
-            f"Timer removed for **{locations[self.number]}**.\nGlobal cooldown cleared.",
-            ephemeral=True
+            f"💰 **{locations[self.number]} robbed by {user.display_name}!**"
         )
 
         await update_panel()
-        return
-
-
-    # ------------------------
-    # CHECK GLOBAL COOLDOWN
-    # ------------------------
-
-    if data["global_cooldown"] is not None:
-
-        end = datetime.fromisoformat(data["global_cooldown"])
-
-        if now < end:
-
-            remaining = format_time(data["global_cooldown"])
-
-            await interaction.followup.send(
-                f"⏳ Global cooldown active\nWait **{remaining}**",
-                ephemeral=True
-            )
-            return
-
-
-    # ------------------------
-    # START ROBBERY
-    # ------------------------
-
-    data["locations"][num] = (now + timedelta(hours=24)).isoformat()
-    data["robbers"][num] = user.display_name
-    data["global_cooldown"] = (now + timedelta(hours=1)).isoformat()
-
-    save_data(data)
-
-    await interaction.followup.send(
-        f"💰 **{locations[self.number]} robbed by {user.display_name}!**"
-    )
-
-    await update_panel()
 
 
 # ------------------------
