@@ -23,18 +23,15 @@ locations = {
     1: "West Elizabeth | General Store",
     2: "West Elizabeth | Bank",
     3: "West Elizabeth | Flatneck Station",
-
     4: "New Austin | Thieves Landing",
     5: "New Austin | Fort Mercer",
     6: "New Austin | Bank",
     7: "New Austin | Fort Don Julio",
     8: "New Austin | Vultures Crossing Station",
-
     9: "New Hanover | Fort Wallace",
     10: "New Hanover | Oil Fields",
     11: "New Hanover | Mount Hagen Mine",
     12: "New Hanover | Army Wagon",
-
     13: "Lemoyne | Bank",
     14: "Lemoyne | Boat",
     15: "Lemoyne | General Store",
@@ -76,14 +73,12 @@ def clean_expired():
     now = datetime.utcnow()
     changed = False
 
-    # location timers
     for loc, end in list(data["locations"].items()):
         if now >= datetime.fromisoformat(end):
             data["locations"].pop(loc)
             data["robbers"].pop(loc, None)
             changed = True
 
-    # global cooldown
     if data["global_cooldown"]:
         if now >= datetime.fromisoformat(data["global_cooldown"]):
             data["global_cooldown"] = None
@@ -107,8 +102,9 @@ def format_time(end):
 
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
+    secs = seconds % 60
 
-    return f"{hours}h {minutes}m"
+    return f"{hours}h {minutes}m {secs}s"
 
 
 # ------------------------
@@ -118,7 +114,6 @@ def format_time(end):
 def get_global_cd():
 
     clean_expired()
-
     data = load_data()
 
     if not data["global_cooldown"]:
@@ -158,16 +153,11 @@ class RobberyButton(discord.ui.Button):
         data = load_data()
         num = str(self.number)
 
-        # ------------------------
-        # REMOVE TIMER + GLOBAL CD
-        # ------------------------
-
+        # REMOVE TIMER
         if num in data["locations"]:
 
             data["locations"].pop(num, None)
             data["robbers"].pop(num, None)
-
-            # clear global cooldown
             data["global_cooldown"] = None
 
             save_data(data)
@@ -180,12 +170,8 @@ class RobberyButton(discord.ui.Button):
             await update_panel()
             return
 
-
-        # ------------------------
-        # CHECK GLOBAL COOLDOWN
-        # ------------------------
-
-        if data["global_cooldown"] is not None:
+        # GLOBAL COOLDOWN CHECK
+        if data["global_cooldown"]:
 
             end = datetime.fromisoformat(data["global_cooldown"])
 
@@ -199,10 +185,7 @@ class RobberyButton(discord.ui.Button):
                 )
                 return
 
-
-        # ------------------------
         # START ROBBERY
-        # ------------------------
 
         data["locations"][num] = (now + timedelta(hours=24)).isoformat()
         data["robbers"][num] = user.display_name
@@ -238,7 +221,6 @@ class RobberyView(discord.ui.View):
 def build_embed():
 
     clean_expired()
-
     data = load_data()
 
     embed = discord.Embed(
@@ -257,7 +239,6 @@ def build_embed():
             value = f"🔴 {remaining}\n👤 {robber}"
 
         else:
-
             value = "🟢 Available"
 
         embed.add_field(
@@ -277,13 +258,16 @@ async def update_panel():
 
     global panel_message
 
-    if not panel_message:
+    if panel_message is None:
         return
 
     embed = build_embed()
     view = RobberyView()
 
-    await panel_message.edit(embed=embed, view=view)
+    try:
+        await panel_message.edit(embed=embed, view=view)
+    except:
+        pass
 
 
 # ------------------------
@@ -293,7 +277,8 @@ async def update_panel():
 @tasks.loop(minutes=1)
 async def refresh_panel():
 
-    await update_panel()
+    if panel_message:
+        await update_panel()
 
 
 # ------------------------
@@ -303,7 +288,8 @@ async def refresh_panel():
 @bot.event
 async def on_ready():
 
-    refresh_panel.start()
+    if not refresh_panel.is_running():
+        refresh_panel.start()
 
     print(f"Logged in as {bot.user}")
 
