@@ -14,24 +14,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 DATA_FILE = "data.json"
 panel_message = None
 
-
-# ------------------------
-# DATA FUNCTIONS
-# ------------------------
-
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {"cooldowns": {}, "locations": {}, "users": {}}
-
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
-
-
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
-
-
 # ------------------------
 # ROBBERY LOCATIONS
 # ------------------------
@@ -56,14 +38,37 @@ locations = {
     17: "Lemoyne | Fort Lemoyne"
 }
 
+# ------------------------
+# DATA
+# ------------------------
+
+def load_data():
+
+    if not os.path.exists(DATA_FILE):
+
+        return {
+            "locations": {},
+            "robbers": {},
+            "global_cooldown": None
+        }
+
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
+
+
+def save_data(data):
+
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f)
+
 
 # ------------------------
-# TIME FORMATTER
+# TIME FORMAT
 # ------------------------
 
-def format_time(end_time):
+def format_time(end):
 
-    remaining = datetime.fromisoformat(end_time) - datetime.utcnow()
+    remaining = datetime.fromisoformat(end) - datetime.utcnow()
     seconds = int(remaining.total_seconds())
 
     if seconds <= 0:
@@ -76,12 +81,27 @@ def format_time(end_time):
 
 
 # ------------------------
-# BUTTON CLASS
+# GLOBAL COOLDOWN
+# ------------------------
+
+def get_global_cd():
+
+    data = load_data()
+
+    if not data["global_cooldown"]:
+        return "Available"
+
+    return format_time(data["global_cooldown"])
+
+
+# ------------------------
+# BUTTON
 # ------------------------
 
 class RobberyButton(discord.ui.Button):
 
     def __init__(self, number):
+
         super().__init__(label=str(number))
         self.number = number
         self.update_color()
@@ -104,18 +124,17 @@ class RobberyButton(discord.ui.Button):
 
         data = load_data()
 
-        cooldowns = data["cooldowns"]
         locs = data["locations"]
-        users = data["users"]
+        robbers = data["robbers"]
+        global_cd = data["global_cooldown"]
 
         num = str(self.number)
-        uid = str(user.id)
 
         # REMOVE TIMER
         if num in locs:
 
             del locs[num]
-            users.pop(num, None)
+            robbers.pop(num, None)
 
             save_data(data)
 
@@ -127,26 +146,25 @@ class RobberyButton(discord.ui.Button):
             await update_panel()
             return
 
-        # CHECK USER COOLDOWN
-        if uid in cooldowns:
+        # CHECK GLOBAL COOLDOWN
+        if global_cd:
 
-            end = datetime.fromisoformat(cooldowns[uid])
+            if now < datetime.fromisoformat(global_cd):
 
-            if now < end:
-
-                remaining = format_time(cooldowns[uid])
+                remaining = format_time(global_cd)
 
                 await interaction.followup.send(
-                    f"⏳ Wait **{remaining}** before robbing again.",
+                    f"⏳ Global cooldown active\nWait **{remaining}**",
                     ephemeral=True
                 )
                 return
 
         # START ROBBERY
-        locs[num] = (now + timedelta(hours=24)).isoformat()
-        users[num] = user.display_name
 
-        cooldowns[uid] = (now + timedelta(hours=1)).isoformat()
+        locs[num] = (now + timedelta(hours=24)).isoformat()
+        robbers[num] = user.display_name
+
+        data["global_cooldown"] = (now + timedelta(hours=1)).isoformat()
 
         save_data(data)
 
@@ -164,6 +182,7 @@ class RobberyButton(discord.ui.Button):
 class RobberyView(discord.ui.View):
 
     def __init__(self):
+
         super().__init__(timeout=None)
 
         for num in locations:
@@ -171,7 +190,7 @@ class RobberyView(discord.ui.View):
 
 
 # ------------------------
-# EMBED BUILDER
+# EMBED
 # ------------------------
 
 def build_embed():
@@ -180,7 +199,7 @@ def build_embed():
 
     embed = discord.Embed(
         title="Robbery Locations",
-        description="🟢 Available | 🔴 Robbed",
+        description=f"🟢 Available | 🔴 Robbed\n\n⏳ Global Cooldown: **{get_global_cd()}**",
         color=0xff0000
     )
 
@@ -189,7 +208,7 @@ def build_embed():
         if str(num) in data["locations"]:
 
             remaining = format_time(data["locations"][str(num)])
-            robber = data["users"].get(str(num), "Unknown")
+            robber = data["robbers"].get(str(num), "Unknown")
 
             value = f"🔴 {remaining}\n👤 {robber}"
 
@@ -214,7 +233,7 @@ async def update_panel():
 
     global panel_message
 
-    if panel_message is None:
+    if not panel_message:
         return
 
     embed = build_embed()
@@ -224,7 +243,7 @@ async def update_panel():
 
 
 # ------------------------
-# AUTO REFRESH TIMER
+# AUTO REFRESH
 # ------------------------
 
 @tasks.loop(minutes=1)
