@@ -14,6 +14,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 DATA_FILE = "data.json"
 panel_message = None
 
+
 # ------------------------
 # ROBBERY LOCATIONS
 # ------------------------
@@ -41,8 +42,9 @@ locations = {
     17: "Lemoyne | Fort Lemoyne"
 }
 
+
 # ------------------------
-# DATA
+# DATA FUNCTIONS
 # ------------------------
 
 def load_data():
@@ -65,28 +67,23 @@ def save_data(data):
 
 
 # ------------------------
-# CLEAN EXPIRED TIMERS
+# CLEAN EXPIRED COOLDOWNS
 # ------------------------
 
 def clean_expired():
 
     data = load_data()
     now = datetime.utcnow()
-
     changed = False
 
-    # clean location timers
-    expired = []
-    for loc, end in data["locations"].items():
+    # location timers
+    for loc, end in list(data["locations"].items()):
         if now >= datetime.fromisoformat(end):
-            expired.append(loc)
+            data["locations"].pop(loc)
+            data["robbers"].pop(loc, None)
+            changed = True
 
-    for loc in expired:
-        data["locations"].pop(loc, None)
-        data["robbers"].pop(loc, None)
-        changed = True
-
-    # clean global cooldown
+    # global cooldown
     if data["global_cooldown"]:
         if now >= datetime.fromisoformat(data["global_cooldown"]):
             data["global_cooldown"] = None
@@ -115,7 +112,7 @@ def format_time(end):
 
 
 # ------------------------
-# GLOBAL COOLDOWN
+# GLOBAL COOLDOWN DISPLAY
 # ------------------------
 
 def get_global_cd():
@@ -157,60 +154,58 @@ class RobberyButton(discord.ui.Button):
 
         clean_expired()
 
-        user = interaction.user
         now = datetime.utcnow()
+        user = interaction.user
 
         data = load_data()
-
-        locs = data["locations"]
-        robbers = data["robbers"]
-        global_cd = data["global_cooldown"]
-
         num = str(self.number)
 
         # ------------------------
         # REMOVE TIMER + GLOBAL CD
         # ------------------------
 
-        if num in locs:
+        if num in data["locations"]:
 
-            del locs[num]
-            robbers.pop(num, None)
+            data["locations"].pop(num, None)
+            data["robbers"].pop(num, None)
 
+            # CLEAR GLOBAL COOLDOWN
             data["global_cooldown"] = None
 
             save_data(data)
 
             await interaction.followup.send(
-                f"Cooldown removed for **{locations[self.number]}**",
+                f"Timer removed for **{locations[self.number]}**\nGlobal cooldown cleared.",
                 ephemeral=True
             )
 
             await update_panel()
             return
 
+
         # ------------------------
-        # CHECK GLOBAL COOLDOWN
+        # GLOBAL COOLDOWN CHECK
         # ------------------------
 
-        if global_cd:
+        if data["global_cooldown"]:
 
-            if now < datetime.fromisoformat(global_cd):
+            end = datetime.fromisoformat(data["global_cooldown"])
 
-                remaining = format_time(global_cd)
+            if now < end:
 
                 await interaction.followup.send(
-                    f"⏳ Global cooldown active\nWait **{remaining}**",
+                    f"⏳ Global cooldown active\nWait **{format_time(data['global_cooldown'])}**",
                     ephemeral=True
                 )
                 return
+
 
         # ------------------------
         # START ROBBERY
         # ------------------------
 
-        locs[num] = (now + timedelta(hours=24)).isoformat()
-        robbers[num] = user.display_name
+        data["locations"][num] = (now + timedelta(hours=24)).isoformat()
+        data["robbers"][num] = user.display_name
         data["global_cooldown"] = (now + timedelta(hours=1)).isoformat()
 
         save_data(data)
