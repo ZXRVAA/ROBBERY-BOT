@@ -46,6 +46,7 @@ locations = {
 # ------------------------
 
 def load_data():
+
     if not os.path.exists(DATA_FILE):
         return {
             "locations": {},
@@ -58,8 +59,41 @@ def load_data():
 
 
 def save_data(data):
+
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=4)
+
+
+# ------------------------
+# CLEAN EXPIRED TIMERS
+# ------------------------
+
+def clean_expired():
+
+    data = load_data()
+    now = datetime.utcnow()
+
+    changed = False
+
+    # clean location timers
+    expired = []
+    for loc, end in data["locations"].items():
+        if now >= datetime.fromisoformat(end):
+            expired.append(loc)
+
+    for loc in expired:
+        data["locations"].pop(loc, None)
+        data["robbers"].pop(loc, None)
+        changed = True
+
+    # clean global cooldown
+    if data["global_cooldown"]:
+        if now >= datetime.fromisoformat(data["global_cooldown"]):
+            data["global_cooldown"] = None
+            changed = True
+
+    if changed:
+        save_data(data)
 
 
 # ------------------------
@@ -86,6 +120,8 @@ def format_time(end):
 
 def get_global_cd():
 
+    clean_expired()
+
     data = load_data()
 
     if not data["global_cooldown"]:
@@ -101,6 +137,7 @@ def get_global_cd():
 class RobberyButton(discord.ui.Button):
 
     def __init__(self, number):
+
         super().__init__(label=str(number))
         self.number = number
         self.update_color()
@@ -118,6 +155,8 @@ class RobberyButton(discord.ui.Button):
 
         await interaction.response.defer(ephemeral=True)
 
+        clean_expired()
+
         user = interaction.user
         now = datetime.utcnow()
 
@@ -130,7 +169,7 @@ class RobberyButton(discord.ui.Button):
         num = str(self.number)
 
         # ------------------------
-        # REMOVE TIMER + GLOBAL COOLDOWN
+        # REMOVE TIMER + GLOBAL CD
         # ------------------------
 
         if num in locs:
@@ -138,13 +177,12 @@ class RobberyButton(discord.ui.Button):
             del locs[num]
             robbers.pop(num, None)
 
-            # CLEAR GLOBAL COOLDOWN
             data["global_cooldown"] = None
 
             save_data(data)
 
             await interaction.followup.send(
-                f"Cooldown removed for **{locations[self.number]}** (Global cooldown cleared)",
+                f"Cooldown removed for **{locations[self.number]}**",
                 ephemeral=True
             )
 
@@ -204,6 +242,8 @@ class RobberyView(discord.ui.View):
 
 def build_embed():
 
+    clean_expired()
+
     data = load_data()
 
     embed = discord.Embed(
@@ -257,6 +297,7 @@ async def update_panel():
 
 @tasks.loop(minutes=1)
 async def refresh_panel():
+
     await update_panel()
 
 
