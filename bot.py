@@ -64,6 +64,26 @@ def save_data(data):
 
 
 # ------------------------
+# TIME FORMATTER
+# ------------------------
+
+def format_remaining(end_time):
+
+    end = datetime.fromisoformat(end_time)
+    now = datetime.utcnow()
+
+    remaining = end - now
+
+    if remaining.total_seconds() <= 0:
+        return "0h 0m"
+
+    hours, remainder = divmod(int(remaining.total_seconds()), 3600)
+    minutes = remainder // 60
+
+    return f"{hours}h {minutes}m"
+
+
+# ------------------------
 # CLEAN EXPIRED COOLDOWNS
 # ------------------------
 
@@ -73,14 +93,14 @@ def clean_expired():
     now = datetime.utcnow()
     changed = False
 
-    # location timers
+    # Location cooldowns
     for loc, end in list(data["locations"].items()):
         if now >= datetime.fromisoformat(end):
             data["locations"].pop(loc)
             data["robbers"].pop(loc, None)
             changed = True
 
-    # global cooldown
+    # Global cooldown
     if data["global_cooldown"]:
         if now >= datetime.fromisoformat(data["global_cooldown"]):
             data["global_cooldown"] = None
@@ -88,30 +108,6 @@ def clean_expired():
 
     if changed:
         save_data(data)
-
-
-# ------------------------
-# DISCORD LIVE TIMER
-# ------------------------
-
-def discord_timer(end):
-
-    timestamp = int(datetime.fromisoformat(end).timestamp())
-    return f"<t:{timestamp}:R>"
-
-
-# ------------------------
-# GLOBAL COOLDOWN DISPLAY
-# ------------------------
-
-def get_global_cd():
-
-    data = load_data()
-
-    if not data["global_cooldown"]:
-        return "Available"
-
-    return discord_timer(data["global_cooldown"])
 
 
 # ------------------------
@@ -155,7 +151,7 @@ class RobberyButton(discord.ui.Button):
             save_data(data)
 
             await interaction.followup.send(
-                f"Timer removed for **{locations[self.number]}**.\nGlobal cooldown cleared.",
+                f"Timer removed for **{locations[self.number]}**.",
                 ephemeral=True
             )
 
@@ -169,8 +165,10 @@ class RobberyButton(discord.ui.Button):
 
             if now < end:
 
+                remaining = format_remaining(data["global_cooldown"])
+
                 await interaction.followup.send(
-                    f"⏳ Global cooldown active\nWait **{discord_timer(data['global_cooldown'])}**",
+                    f"⏳ Global cooldown active\nWait **{remaining}**",
                     ephemeral=True
                 )
                 return
@@ -211,9 +209,14 @@ def build_embed():
 
     data = load_data()
 
+    if data["global_cooldown"]:
+        global_cd = format_remaining(data["global_cooldown"])
+    else:
+        global_cd = "Available"
+
     embed = discord.Embed(
         title="Robbery Locations",
-        description=f"🟢 Available | 🔴 Robbed\n\n⏳ Global Cooldown: **{get_global_cd()}**",
+        description=f"🟢 Available | 🔴 Robbed\n\n⏳ Global Cooldown: **{global_cd}**",
         color=0xff0000
     )
 
@@ -221,7 +224,7 @@ def build_embed():
 
         if str(num) in data["locations"]:
 
-            remaining = discord_timer(data["locations"][str(num)])
+            remaining = format_remaining(data["locations"][str(num)])
             robber = data["robbers"].get(str(num), "Unknown")
 
             value = f"🔴 {remaining}\n👤 {robber}"
