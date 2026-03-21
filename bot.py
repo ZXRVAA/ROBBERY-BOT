@@ -45,20 +45,24 @@ locations = {
 # ------------------------
 
 def load_data():
-
     if not os.path.exists(DATA_FILE):
         return {
-            "locations": {},
-            "robbers": {},
-            "global_cooldown": None
+            "locations": {},       # location_id -> {user_id: {"name": str, "end_time": iso}}
+            "user_cooldowns": {}   # user_id -> iso
         }
 
     with open(DATA_FILE, "r") as f:
-        return json.load(f)
+        data = json.load(f)
+
+    if "locations" not in data:
+        data["locations"] = {}
+    if "user_cooldowns" not in data:
+        data["user_cooldowns"] = {}
+
+    return data
 
 
 def save_data(data):
-
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
@@ -68,10 +72,8 @@ def save_data(data):
 # ------------------------
 
 def format_remaining(end_time):
-
     end = datetime.fromisoformat(end_time)
     now = datetime.utcnow()
-
     remaining = end - now
 
     if remaining.total_seconds() <= 0:
@@ -79,7 +81,6 @@ def format_remaining(end_time):
 
     hours, remainder = divmod(int(remaining.total_seconds()), 3600)
     minutes = remainder // 60
-
     return f"{hours}h {minutes}m"
 
 
@@ -88,22 +89,26 @@ def format_remaining(end_time):
 # ------------------------
 
 def clean_expired():
-
     data = load_data()
     now = datetime.utcnow()
     changed = False
 
-    # Location cooldowns
-    for loc, end in list(data["locations"].items()):
-        if now >= datetime.fromisoformat(end):
-            data["locations"].pop(loc)
-            data["robbers"].pop(loc, None)
+    # Remove expired robbery timers
+    for loc_id, user_map in list(data["locations"].items()):
+        for user_id, timer_data in list(user_map.items()):
+            if now >= datetime.fromisoformat(timer_data["end_time"]):
+                data["locations"][loc_id].pop(user_id, None)
+                changed = True
+
+        # remove location if nobody has timer there anymore
+        if not data["locations"][loc_id]:
+            data["locations"].pop(loc_id, None)
             changed = True
 
-    # Global cooldown
-    if data["global_cooldown"]:
-        if now >= datetime.fromisoformat(data["global_cooldown"]):
-            data["global_cooldown"] = None
+    # Remove expired user cooldowns
+    for user_id, end_time in list(data["user_cooldowns"].items()):
+        if now >= datetime.fromisoformat(end_time):
+            data["user_cooldowns"].pop(user_id, None)
             changed = True
 
     if changed:
@@ -115,73 +120,66 @@ def clean_expired():
 # ------------------------
 
 class RobberyButton(discord.ui.Button):
-
     def __init__(self, number):
-
-        super().__init__(label=str(number))
+        super().__init__(label=str(number), style=discord.ButtonStyle.secondary)
         self.number = number
-        self.update_color()
-
-    def update_color(self):
-
-        data = load_data()
-
-        if str(self.number) in data["locations"]:
-            self.style = discord.ButtonStyle.danger
-        else:
-            self.style = discord.ButtonStyle.success
 
     async def callback(self, interaction: discord.Interaction):
-
         await interaction.response.defer(ephemeral=True)
 
         user = interaction.user
+        user_id = str(user.id)
         now = datetime.utcnow()
 
         data = load_data()
-        num = str(self.number)
+        loc_id = str(self.number)
 
-        # REMOVE TIMER
-        if num in data["locations"]:
+        if loc_id not in data["locations"]:
+            data["locations"][loc_id] = {}
 
-            data["locations"].pop(num, None)
-            data["robbers"].pop(num, None)
-            data["global_cooldown"] = None
+        # REMOVE THIS USER'S TIMER FOR THIS LOCATION
+        if user_id in data["locations"][loc_id]:
+            data["locations"][loc_id].pop(user_id, None)
+
+            if not data["locations"][loc_id]:
+                data["locations"].pop(loc_id, None)
 
             save_data(data)
 
             await interaction.followup.send(
-                f"Timer removed for **{locations[self.number]}**.",
+                f"Removed **your** timer for **{locations[self.number]}**.",
                 ephemeral=True
             )
 
             await update_panel()
             return
 
-        # GLOBAL COOLDOWN CHECK
-        if data["global_cooldown"]:
-
-            end = datetime.fromisoformat(data["global_cooldown"])
+        # CHECK THIS USER'S PERSONAL COOLDOWN
+        if user_id in data["user_cooldowns"]:
+            end = datetime.fromisoformat(data["user_cooldowns"][user_id])
 
             if now < end:
-
-                remaining = format_remaining(data["global_cooldown"])
+                remaining = format_remaining(data["user_cooldowns"][user_id])
 
                 await interaction.followup.send(
-                    f"⏳ Global cooldown active\nWait **{remaining}**",
+                    f"⏳ You are on cooldown.\nWait **{remaining}** before starting another robbery.",
                     ephemeral=True
                 )
                 return
 
-        # START ROBBERY
-        data["locations"][num] = (now + timedelta(hours=24)).isoformat()
-        data["robbers"][num] = user.display_name
-        data["global_cooldown"] = (now + timedelta(hours=1)).isoformat()
+        # START TIMER FOR THIS USER ONLY
+        data["locations"][loc_id][user_id] = {
+            "name": user.display_name,
+            "end_time": (now + timedelta(hours=24)).isoformat()
+        }
+
+        data["user_cooldowns"][user_id] = (now + timedelta(hours=1)).isoformat()
 
         save_data(data)
 
         await interaction.followup.send(
-            f"💰 **{locations[self.number]} robbed by {user.display_name}!**"
+            f"💰 You started **{locations[self.number]}**.",
+            ephemeral=True
         )
 
         await update_panel()
@@ -192,9 +190,7 @@ class RobberyButton(discord.ui.Button):
 # ------------------------
 
 class RobberyView(discord.ui.View):
-
     def __init__(self):
-
         super().__init__(timeout=None)
 
         for num in locations:
@@ -206,31 +202,38 @@ class RobberyView(discord.ui.View):
 # ------------------------
 
 def build_embed():
-
     data = load_data()
-
-    if data["global_cooldown"]:
-        global_cd = format_remaining(data["global_cooldown"])
-    else:
-        global_cd = "Available"
 
     embed = discord.Embed(
         title="Robbery Locations",
-        description=f"🟢 Available | 🔴 Robbed\n\n⏳ Global Cooldown: **{global_cd}**",
+        description=(
+            "Each player has their own timers.\n"
+            "Click a button to start or remove **your** timer for that location.\n"
+            "Your 1-hour cooldown is personal."
+        ),
         color=0xff0000
     )
 
+    active_users = len(data["user_cooldowns"])
+    embed.set_footer(text=f"Players currently on cooldown: {active_users}")
+
     for num, name in locations.items():
+        loc_id = str(num)
 
-        if str(num) in data["locations"]:
+        if loc_id in data["locations"] and data["locations"][loc_id]:
+            entries = []
 
-            remaining = format_remaining(data["locations"][str(num)])
-            robber = data["robbers"].get(str(num), "Unknown")
+            for user_id, timer_data in data["locations"][loc_id].items():
+                remaining = format_remaining(timer_data["end_time"])
+                username = timer_data.get("name", "Unknown")
+                entries.append(f"👤 {username} — {remaining}")
 
-            value = f"🔴 {remaining}\n👤 {robber}"
+            value = "\n".join(entries[:10])
 
+            if len(entries) > 10:
+                value += f"\n...and {len(entries) - 10} more"
         else:
-            value = "🟢 Available"
+            value = "🟢 Nobody active"
 
         embed.add_field(
             name=f"{num} | {name}",
@@ -246,7 +249,6 @@ def build_embed():
 # ------------------------
 
 async def update_panel():
-
     global panel_message
 
     if panel_message is None:
@@ -264,14 +266,12 @@ async def update_panel():
 
 @tasks.loop(seconds=30)
 async def cooldown_watcher():
-
     clean_expired()
     await update_panel()
 
 
 @cooldown_watcher.before_loop
 async def before_loop():
-
     await bot.wait_until_ready()
 
 
@@ -281,7 +281,6 @@ async def before_loop():
 
 @bot.command()
 async def robberies(ctx):
-
     global panel_message
 
     embed = build_embed()
@@ -296,7 +295,6 @@ async def robberies(ctx):
 
 @bot.event
 async def on_ready():
-
     cooldown_watcher.start()
     print(f"Logged in as {bot.user}")
 
