@@ -137,20 +137,21 @@ class RobberyButton(discord.ui.Button):
             data["locations"][loc_id] = {}
 
         # REMOVE THIS USER'S TIMER FOR THIS LOCATION
-        # AND REMOVE THEIR PERSONAL 1-HOUR COOLDOWN
+        # AND CLEAR THEIR PERSONAL 1-HOUR COOLDOWN
         if user_id in data["locations"][loc_id]:
             data["locations"][loc_id].pop(user_id, None)
 
             if not data["locations"][loc_id]:
                 data["locations"].pop(loc_id, None)
 
-            data["user_cooldowns"].pop(user_id, None)
+            if user_id in data["user_cooldowns"]:
+                data["user_cooldowns"].pop(user_id, None)
 
             save_data(data)
 
             await interaction.followup.send(
                 f"Removed **your** timer for **{locations[self.number]}**.\n"
-                f"Your 1-hour cooldown has also been cleared.",
+                f"Your personal 1-hour cooldown has been cleared.",
                 ephemeral=True
             )
 
@@ -212,7 +213,7 @@ def build_embed():
         description=(
             "Click a button to start or remove **your** timer for that location.\n"
             "Each player has their own 24-hour robbery timer and personal 1-hour cooldown.\n"
-            "Removing your robbery timer also clears your 1-hour cooldown."
+            "Removing your robbery timer also clears your personal 1-hour cooldown."
         ),
         color=0xff0000
     )
