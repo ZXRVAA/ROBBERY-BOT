@@ -47,8 +47,8 @@ locations = {
 def load_data():
     if not os.path.exists(DATA_FILE):
         return {
-            "locations": {},       # location_id -> {user_id: {"name": str, "end_time": iso}}
-            "user_cooldowns": {}   # user_id -> iso
+            "locations": {},
+            "user_cooldowns": {}
         }
 
     with open(DATA_FILE, "r") as f:
@@ -100,12 +100,11 @@ def clean_expired():
                 data["locations"][loc_id].pop(user_id, None)
                 changed = True
 
-        # remove location if nobody has timer there anymore
         if not data["locations"][loc_id]:
             data["locations"].pop(loc_id, None)
             changed = True
 
-    # Remove expired user cooldowns
+    # Remove expired personal cooldowns
     for user_id, end_time in list(data["user_cooldowns"].items()):
         if now >= datetime.fromisoformat(end_time):
             data["user_cooldowns"].pop(user_id, None)
@@ -137,7 +136,8 @@ class RobberyButton(discord.ui.Button):
         if loc_id not in data["locations"]:
             data["locations"][loc_id] = {}
 
-        # REMOVE THIS USER'S TIMER FOR THIS LOCATION
+        # REMOVE ONLY THIS USER'S TIMER FOR THIS LOCATION
+        # Keep their personal cooldown untouched
         if user_id in data["locations"][loc_id]:
             data["locations"][loc_id].pop(user_id, None)
 
@@ -147,7 +147,8 @@ class RobberyButton(discord.ui.Button):
             save_data(data)
 
             await interaction.followup.send(
-                f"Removed **your** timer for **{locations[self.number]}**.",
+                f"Removed **your** timer for **{locations[self.number]}**.\n"
+                f"Your personal 1-hour cooldown is unchanged.",
                 ephemeral=True
             )
 
@@ -207,15 +208,15 @@ def build_embed():
     embed = discord.Embed(
         title="Robbery Locations",
         description=(
-            "Each player has their own timers.\n"
             "Click a button to start or remove **your** timer for that location.\n"
-            "Your 1-hour cooldown is personal."
+            "Each player has their own 24-hour robbery timers and personal 1-hour cooldown.\n"
+            "Removing a robbery timer does **not** remove your 1-hour cooldown."
         ),
         color=0xff0000
     )
 
     active_users = len(data["user_cooldowns"])
-    embed.set_footer(text=f"Players currently on cooldown: {active_users}")
+    embed.set_footer(text=f"Players currently on personal cooldown: {active_users}")
 
     for num, name in locations.items():
         loc_id = str(num)
@@ -224,9 +225,16 @@ def build_embed():
             entries = []
 
             for user_id, timer_data in data["locations"][loc_id].items():
-                remaining = format_remaining(timer_data["end_time"])
                 username = timer_data.get("name", "Unknown")
-                entries.append(f"👤 {username} — {remaining}")
+                robbery_remaining = format_remaining(timer_data["end_time"])
+
+                cooldown_text = "Ready"
+                if user_id in data["user_cooldowns"]:
+                    cooldown_text = format_remaining(data["user_cooldowns"][user_id])
+
+                entries.append(
+                    f"👤 {username} — Robbery: {robbery_remaining} | Cooldown: {cooldown_text}"
+                )
 
             value = "\n".join(entries[:10])
 
