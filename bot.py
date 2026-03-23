@@ -2,7 +2,8 @@ import discord
 from discord.ext import commands, tasks
 import os
 import json
-from datetime import datetime, timedelta
+import traceback
+from datetime import datetime, timedelta, timezone
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -40,34 +41,22 @@ locations = {
 
 
 # ------------------------
-# DATA
-# ------------------------
-
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {"locations": {}, "user_cooldowns": {}, "panels": []}
-
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
-
-
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=4)
-
-
-# ------------------------
-# TIME (H:M:S)
+# TIME HELPERS
 # ------------------------
 
 def now():
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
-def format_time(end_time: str):
-    end = datetime.fromisoformat(end_time)
-    remaining = end - now()
+def parse_time(iso_string: str) -> datetime:
+    dt = datetime.fromisoformat(iso_string)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
+
+def format_remaining(end_time: str) -> str:
+    remaining = parse_time(end_time) - now()
     total_seconds = int(remaining.total_seconds())
 
     if total_seconds <= 0:
@@ -75,8 +64,46 @@ def format_time(end_time: str):
 
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
-
     return f"{hours}h {minutes}m {seconds}s"
+
+
+# ------------------------
+# DATA
+# ------------------------
+
+def default_data():
+    return {
+        "locations": {},
+        "user_cooldowns": {},
+        "panels": []
+    }
+
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return default_data()
+
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # make sure keys exist even if file is older/broken
+        data.setdefault("locations", {})
+        data.setdefault("user_cooldowns", {})
+        data.setdefault("panels", [])
+        return data
+
+    except Exception as e:
+        print(f"Failed to load {DATA_FILE}: {e}")
+        return default_data()
+
+
+def save_data(data):
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Failed to save {DATA_FILE}: {e}")
 
 
 # ------------------------
@@ -88,19 +115,31 @@ def clean_expired():
     current = now()
     changed = False
 
+    # Remove expired robbery timers
     for loc_id, users in list(data["locations"].items()):
-        for uid, t in list(users.items()):
-            if current >= datetime.fromisoformat(t["end_time"]):
-                users.pop(uid)
+        for uid, info in list(users.items()):
+            try:
+                if current >= parse_time(info["end_time"]):
+                    users.pop(uid, None)
+                    changed = True
+            except Exception as e:
+                print(f"Bad robbery timer for user {uid} at location {loc_id}: {e}")
+                users.pop(uid, None)
                 changed = True
 
         if not users:
-            data["locations"].pop(loc_id)
+            data["locations"].pop(loc_id, None)
             changed = True
 
-    for uid, t in list(data["user_cooldowns"].items()):
-        if current >= datetime.fromisoformat(t):
-            data["user_cooldowns"].pop(uid)
+    # Remove expired user cooldowns
+    for uid, end_time in list(data["user_cooldowns"].items()):
+        try:
+            if current >= parse_time(end_time):
+                data["user_cooldowns"].pop(uid, None)
+                changed = True
+        except Exception as e:
+            print(f"Bad cooldown for user {uid}: {e}")
+            data["user_cooldowns"].pop(uid, None)
             changed = True
 
     if changed:
@@ -123,17 +162,22 @@ def build_embed():
     for num, name in locations.items():
         loc_id = str(num)
 
-        if loc_id in data["locations"]:
+        if loc_id in data["locations"] and data["locations"][loc_id]:
             lines = []
 
-            for uid, t in data["locations"][loc_id].items():
-                rob = format_time(t["end_time"])
+            for uid, info in data["locations"][loc_id].items():
+                robbery_time = format_remaining(info["end_time"])
 
-                cd = "Ready"
+                cooldown_time = "Ready"
                 if uid in data["user_cooldowns"]:
-                    cd = format_time(data["user_cooldowns"][uid])
+                    cooldown_time = format_remaining(data["user_cooldowns"][uid])
 
-                lines.append(f"👤 {t['name']} — {rob} | CD: {cd}")
+                if cooldown_time == "0h 0m 0s":
+                    cooldown_time = "Ready"
+
+                lines.append(
+                    f"👤 {info['name']} — {robbery_time} | CD: {cooldown_time}"
+                )
 
             value = "\n".join(lines)
         else:
@@ -141,6 +185,7 @@ def build_embed():
 
         embed.add_field(name=f"{num} | {name}", value=value, inline=False)
 
+    embed.set_footer(text="Refreshes automatically")
     return embed
 
 
@@ -148,10 +193,11 @@ def build_embed():
 # PANELS
 # ------------------------
 
-def add_panel(guild_id, channel_id, message_id):
+def add_panel(guild_id: int, channel_id: int, message_id: int):
     data = load_data()
 
-    if not any(p["message_id"] == message_id for p in data["panels"]):
+    exists = any(p["message_id"] == message_id for p in data["panels"])
+    if not exists:
         data["panels"].append({
             "guild_id": guild_id,
             "channel_id": channel_id,
@@ -163,32 +209,36 @@ def add_panel(guild_id, channel_id, message_id):
 async def update_all_panels():
     data = load_data()
     embed = build_embed()
-    view = RobberyView()
+    valid_panels = []
 
-    valid = []
-
-    for p in data["panels"]:
+    for panel in data["panels"]:
         try:
-            channel = bot.get_channel(p["channel_id"]) or await bot.fetch_channel(p["channel_id"])
-            msg = await channel.fetch_message(p["message_id"])
+            channel = bot.get_channel(panel["channel_id"])
+            if channel is None:
+                channel = await bot.fetch_channel(panel["channel_id"])
 
-            await msg.edit(embed=embed, view=view)
-            valid.append(p)
+            message = await channel.fetch_message(panel["message_id"])
+            await message.edit(embed=embed)
+            valid_panels.append(panel)
 
-        except:
-            continue
+        except discord.NotFound:
+            print(f"Panel message not found, removing: {panel}")
+        except discord.Forbidden:
+            print(f"No permission to edit panel, removing: {panel}")
+        except Exception as e:
+            print(f"Failed to update panel {panel['message_id']}: {e}")
 
-    if len(valid) != len(data["panels"]):
-        data["panels"] = valid
+    if len(valid_panels) != len(data["panels"]):
+        data["panels"] = valid_panels
         save_data(data)
 
 
 # ------------------------
-# BUTTON
+# BUTTONS
 # ------------------------
 
 class RobberyButton(discord.ui.Button):
-    def __init__(self, num):
+    def __init__(self, num: int):
         super().__init__(
             label=str(num),
             style=discord.ButtonStyle.secondary,
@@ -201,41 +251,56 @@ class RobberyButton(discord.ui.Button):
 
         user = interaction.user
         uid = str(user.id)
+        loc_id = str(self.num)
+
         data = load_data()
-        loc = str(self.num)
 
-        if loc not in data["locations"]:
-            data["locations"][loc] = {}
+        if loc_id not in data["locations"]:
+            data["locations"][loc_id] = {}
 
-        # REMOVE
-        if uid in data["locations"][loc]:
-            data["locations"][loc].pop(uid)
+        # If user already has this location active, remove it
+        if uid in data["locations"][loc_id]:
+            data["locations"][loc_id].pop(uid, None)
             data["user_cooldowns"].pop(uid, None)
 
-            if not data["locations"][loc]:
-                data["locations"].pop(loc)
+            if not data["locations"][loc_id]:
+                data["locations"].pop(loc_id, None)
 
             save_data(data)
-
             await interaction.followup.send("Removed your timer.", ephemeral=True)
             await update_all_panels()
             return
 
-        # COOLDOWN CHECK
-        if uid in data["user_cooldowns"]:
-            if now() < datetime.fromisoformat(data["user_cooldowns"][uid]):
-                await interaction.followup.send("You're on cooldown.", ephemeral=True)
+        # Block starting another robbery if user already has one active somewhere else
+        for other_loc_id, users in data["locations"].items():
+            if uid in users:
+                await interaction.followup.send(
+                    "You already have an active robbery timer.",
+                    ephemeral=True
+                )
                 return
 
-        # START
-        data["locations"][loc][uid] = {
+        # Cooldown check
+        if uid in data["user_cooldowns"]:
+            if now() < parse_time(data["user_cooldowns"][uid]):
+                await interaction.followup.send(
+                    f"You're on cooldown. Time left: {format_remaining(data['user_cooldowns'][uid])}",
+                    ephemeral=True
+                )
+                return
+            else:
+                data["user_cooldowns"].pop(uid, None)
+
+        # Start robbery
+        robbery_end = now() + timedelta(hours=24)
+        cooldown_end = now() + timedelta(hours=1)
+
+        data["locations"][loc_id][uid] = {
             "name": user.display_name,
-            "end_time": (now() + timedelta(hours=24)).isoformat()
+            "end_time": robbery_end.isoformat()
         }
 
-        data["user_cooldowns"][uid] = (
-            now() + timedelta(hours=1)
-        ).isoformat()
+        data["user_cooldowns"][uid] = cooldown_end.isoformat()
 
         save_data(data)
 
@@ -243,52 +308,65 @@ class RobberyButton(discord.ui.Button):
         await update_all_panels()
 
 
-# ------------------------
-# VIEW
-# ------------------------
-
 class RobberyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-        for i in locations:
-            self.add_item(RobberyButton(i))
+        for num in locations:
+            self.add_item(RobberyButton(num))
 
 
 # ------------------------
-# LOOP (FAST FOR SECONDS)
+# LOOP
 # ------------------------
 
-@tasks.loop(seconds=1)
+@tasks.loop(seconds=5)
 async def updater():
     clean_expired()
     await update_all_panels()
 
 
 @updater.before_loop
-async def before():
+async def updater_before_loop():
     await bot.wait_until_ready()
 
 
+@updater.error
+async def updater_error(error):
+    print("Updater crashed:")
+    traceback.print_exception(type(error), error, error.__traceback__)
+
+
 # ------------------------
-# COMMAND
+# COMMANDS
 # ------------------------
 
 @bot.command()
 async def robberies(ctx):
-    msg = await ctx.send(embed=build_embed(), view=RobberyView())
-    add_panel(ctx.guild.id, ctx.channel.id, msg.id)
+    message = await ctx.send(embed=build_embed(), view=RobberyView())
+    add_panel(
+        guild_id=ctx.guild.id if ctx.guild else 0,
+        channel_id=ctx.channel.id,
+        message_id=message.id
+    )
 
 
 # ------------------------
-# STARTUP
+# EVENTS
 # ------------------------
 
 @bot.event
 async def on_ready():
     bot.add_view(RobberyView())
-    updater.start()
-    print(f"Logged in as {bot.user}")
 
+    if not updater.is_running():
+        updater.start()
+
+    print(f"Logged in as {bot.user} ({bot.user.id})")
+
+
+# ------------------------
+# START
+# ------------------------
 
 bot.run(TOKEN)
