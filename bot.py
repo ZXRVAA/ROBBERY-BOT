@@ -57,16 +57,26 @@ def save_data(data):
 
 
 # ------------------------
-# TIME
+# TIME (H:M:S)
 # ------------------------
 
 def now():
     return datetime.utcnow()
 
 
-def discord_time(end_time):
-    ts = int(datetime.fromisoformat(end_time).timestamp())
-    return f"<t:{ts}:R>"   # live updating
+def format_time(end_time: str):
+    end = datetime.fromisoformat(end_time)
+    remaining = end - now()
+
+    total_seconds = int(remaining.total_seconds())
+
+    if total_seconds <= 0:
+        return "0h 0m 0s"
+
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    return f"{hours}h {minutes}m {seconds}s"
 
 
 # ------------------------
@@ -106,7 +116,7 @@ def build_embed():
 
     embed = discord.Embed(
         title="Robbery Locations (Global Sync)",
-        description="Timers are synced across ALL servers",
+        description="Timers synced across all servers",
         color=0xff0000
     )
 
@@ -117,11 +127,11 @@ def build_embed():
             lines = []
 
             for uid, t in data["locations"][loc_id].items():
-                rob = discord_time(t["end_time"])
+                rob = format_time(t["end_time"])
 
                 cd = "Ready"
                 if uid in data["user_cooldowns"]:
-                    cd = discord_time(data["user_cooldowns"][uid])
+                    cd = format_time(data["user_cooldowns"][uid])
 
                 lines.append(f"👤 {t['name']} — {rob} | CD: {cd}")
 
@@ -206,6 +216,7 @@ class RobberyButton(discord.ui.Button):
                 data["locations"].pop(loc)
 
             save_data(data)
+
             await interaction.followup.send("Removed your timer.", ephemeral=True)
             await update_all_panels()
             return
@@ -239,15 +250,16 @@ class RobberyButton(discord.ui.Button):
 class RobberyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+
         for i in locations:
             self.add_item(RobberyButton(i))
 
 
 # ------------------------
-# LOOP
+# LOOP (FAST FOR SECONDS)
 # ------------------------
 
-@tasks.loop(seconds=5)
+@tasks.loop(seconds=1)
 async def updater():
     clean_expired()
     await update_all_panels()
@@ -269,14 +281,14 @@ async def robberies(ctx):
 
 
 # ------------------------
-# READY
+# STARTUP
 # ------------------------
 
 @bot.event
 async def on_ready():
     bot.add_view(RobberyView())
     updater.start()
-    print("Bot ready")
+    print(f"Logged in as {bot.user}")
 
 
 bot.run(TOKEN)
