@@ -12,6 +12,8 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 DATA_FILE = "data.json"
 ROBBERY_DURATION_HOURS = 24
 COOLDOWN_HOURS = 1
+UPDATE_INTERVAL_SECONDS = 10
+DISCORD_REQUEST_TIMEOUT = 10
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -206,6 +208,7 @@ def start_user_timer(
         "end_time": robbery_end.isoformat(),
     }
     data["user_cooldowns"][uid] = next_cooldown_end.isoformat()
+
     return True, f"Started robbery at location {loc_id}."
 
 
@@ -219,8 +222,10 @@ def remove_user_timer(data: dict[str, Any], uid: str, loc_id: str) -> tuple[bool
     if not users:
         data["locations"].pop(loc_id, None)
 
-    # Keep cooldowns intact. Removing a timer should not reset the cooldown.
-    return True, f"Removed your timer from location {loc_id}."
+    # Removing a timer also clears the user's cooldown
+    data["user_cooldowns"].pop(uid, None)
+
+    return True, f"Removed your timer from location {loc_id}. Your cooldown was also cleared."
 
 
 # ------------------------
@@ -244,10 +249,11 @@ def build_embed_from_data(data: dict[str, Any]) -> discord.Embed:
             for uid, info in users.items():
                 try:
                     robbery_time = format_remaining(info["end_time"])
-                    cooldown_time = "Ready"
 
-                    if uid in data["user_cooldowns"]:
-                        cooldown_time = format_remaining(data["user_cooldowns"][uid])
+                    cooldown_time = "Ready"
+                    cooldown_end = data["user_cooldowns"].get(uid)
+                    if cooldown_end:
+                        cooldown_time = format_remaining(cooldown_end)
                         if cooldown_time == "0h 0m 0s":
                             cooldown_time = "Ready"
 
@@ -262,7 +268,7 @@ def build_embed_from_data(data: dict[str, Any]) -> discord.Embed:
 
         embed.add_field(name=f"{num} | {name}", value=value, inline=False)
 
-    embed.set_footer(text="Refreshes automatically every minute")
+    embed.set_footer(text=f"Refreshes automatically every {UPDATE_INTERVAL_SECONDS} seconds")
     return embed
 
 
@@ -290,6 +296,44 @@ async def add_panel(guild_id: int, channel_id: int, message_id: int) -> None:
             save_data(data)
 
 
+async def update_single_panel(panel: dict[str, Any], embed: discord.Embed) -> dict[str, Any] | None:
+    try:
+        channel_id = panel["channel_id"]
+        message_id = panel["message_id"]
+
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            channel = await asyncio.wait_for(
+                bot.fetch_channel(channel_id),
+                timeout=DISCORD_REQUEST_TIMEOUT,
+            )
+
+        message = await asyncio.wait_for(
+            channel.fetch_message(message_id),
+            timeout=DISCORD_REQUEST_TIMEOUT,
+        )
+
+        await asyncio.wait_for(
+            message.edit(embed=embed),
+            timeout=DISCORD_REQUEST_TIMEOUT,
+        )
+
+        return panel
+
+    except discord.NotFound:
+        print(f"Panel message/channel not found, removing: {panel}")
+        return None
+    except discord.Forbidden:
+        print(f"No permission to edit panel, removing: {panel}")
+        return None
+    except asyncio.TimeoutError:
+        print(f"Timed out updating panel, keeping for retry: {panel}")
+        return panel
+    except Exception as exc:
+        print(f"Failed to update panel {panel.get('message_id', 'unknown')}: {exc}")
+        return panel
+
+
 async def update_all_panels() -> None:
     try:
         async with data_lock:
@@ -301,31 +345,19 @@ async def update_all_panels() -> None:
             embed = build_embed_from_data(data)
             panels = list(data["panels"])
 
-        valid_panels = []
+        if not panels:
+            return
 
-        for panel in panels:
-            try:
-                channel_id = panel["channel_id"]
-                message_id = panel["message_id"]
+        results = await asyncio.gather(
+            *(update_single_panel(panel, embed) for panel in panels),
+            return_exceptions=False,
+        )
 
-                channel = bot.get_channel(channel_id)
-                if channel is None:
-                    channel = await bot.fetch_channel(channel_id)
-
-                message = await channel.fetch_message(message_id)
-                await message.edit(embed=embed, view=RobberyView())
-                valid_panels.append(panel)
-
-            except discord.NotFound:
-                print(f"Panel message/channel not found, removing: {panel}")
-            except discord.Forbidden:
-                print(f"No permission to edit panel, removing: {panel}")
-            except Exception as exc:
-                print(f"Failed to update panel {panel.get('message_id', 'unknown')}: {exc}")
+        valid_panels = [panel for panel in results if panel is not None]
 
         async with data_lock:
             fresh_data = load_data()
-            if len(valid_panels) != len(fresh_data["panels"]):
+            if fresh_data["panels"] != valid_panels:
                 fresh_data["panels"] = valid_panels
                 save_data(fresh_data)
 
@@ -357,7 +389,6 @@ class RobberyButton(discord.ui.Button):
         async with data_lock:
             data = load_data()
             changed = clean_expired_in_memory(data)
-
             if changed:
                 save_data(data)
 
@@ -393,13 +424,17 @@ class RobberyView(discord.ui.View):
 # LOOP
 # ------------------------
 
-@tasks.loop(minutes=1)
+@tasks.loop(seconds=UPDATE_INTERVAL_SECONDS)
 async def updater():
+    started = now()
     try:
         await update_all_panels()
     except Exception:
         print("Updater iteration failed:")
         traceback.print_exc()
+    finally:
+        duration = (now() - started).total_seconds()
+        print(f"Updater ran in {duration:.2f}s")
 
 
 @updater.before_loop
