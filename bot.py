@@ -222,10 +222,18 @@ def remove_user_timer(data: dict[str, Any], uid: str, loc_id: str) -> tuple[bool
     if not users:
         data["locations"].pop(loc_id, None)
 
-    # Removing a timer also clears the user's cooldown
     data["user_cooldowns"].pop(uid, None)
 
     return True, f"Removed your timer from location {loc_id}. Your cooldown was also cleared."
+
+
+def remove_user_cooldown(data: dict[str, Any], uid: str) -> tuple[bool, str]:
+    cooldown_end = data["user_cooldowns"].get(uid)
+    if not cooldown_end:
+        return False, "You don't have an active 1-hour cooldown."
+
+    data["user_cooldowns"].pop(uid, None)
+    return True, "Your 1-hour cooldown has been removed."
 
 
 # ------------------------
@@ -314,7 +322,7 @@ async def update_single_panel(panel: dict[str, Any], embed: discord.Embed) -> di
         )
 
         await asyncio.wait_for(
-            message.edit(embed=embed),
+            message.edit(embed=embed, view=RobberyView()),
             timeout=DISCORD_REQUEST_TIMEOUT,
         )
 
@@ -376,6 +384,7 @@ class RobberyButton(discord.ui.Button):
             label=str(num),
             style=discord.ButtonStyle.secondary,
             custom_id=f"rob_{num}",
+            row=(num - 1) // 5,
         )
         self.num = num
 
@@ -412,12 +421,43 @@ class RobberyButton(discord.ui.Button):
         await update_all_panels()
 
 
+class RemoveCooldownButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Remove 1h Cooldown",
+            style=discord.ButtonStyle.danger,
+            custom_id="remove_1h_cooldown",
+            row=4,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        user = interaction.user
+        uid = str(user.id)
+
+        async with data_lock:
+            data = load_data()
+            changed = clean_expired_in_memory(data)
+            if changed:
+                save_data(data)
+
+            removed, message_text = remove_user_cooldown(data, uid)
+            if removed:
+                save_data(data)
+
+        await interaction.followup.send(message_text, ephemeral=True)
+        await update_all_panels()
+
+
 class RobberyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
         for num in locations:
             self.add_item(RobberyButton(num))
+
+        self.add_item(RemoveCooldownButton())
 
 
 # ------------------------
